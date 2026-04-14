@@ -1,0 +1,26 @@
+{
+  "name": "dalpras/payment-core",
+  "description": "Provider-agnostic payment core with adapters for PayPal, Nexi and future connectors.",
+  "type": "library",
+  "license": "MIT",
+  "require": {
+    "php": "^8.2",
+    "psr/http-message": "^1.1 || ^2.0"
+  },
+  "require-dev": {
+    "phpunit/phpunit": "^11.0"
+  },
+  "autoload": {
+    "psr-4": {
+      "DalPraS\\Payment\\": "src/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "DalPraS\\Payment\\Tests\\": "tests/"
+    }
+  },
+  "scripts": {
+    "test": "phpunit"
+  }
+}
