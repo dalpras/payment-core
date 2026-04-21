@@ -1,9 +1,9 @@
 <?php return array(
     'root' => array(
         'name' => 'dalpras/payment-core',
-        'pretty_version' => 'dev-master',
-        'version' => 'dev-master',
-        'reference' => 'd4a091914d5f65cc2334f336f149ff991a697241',
+        'pretty_version' => 'dev-main',
+        'version' => 'dev-main',
+        'reference' => '36166939315360071ec3c1bb5fd5c8d101f1e4ab',
         'type' => 'library',
         'install_path' => __DIR__ . '/../../',
         'aliases' => array(),
@@ -11,9 +11,9 @@
     ),
     'versions' => array(
         'dalpras/payment-core' => array(
-            'pretty_version' => 'dev-master',
-            'version' => 'dev-master',
-            'reference' => 'd4a091914d5f65cc2334f336f149ff991a697241',
+            'pretty_version' => 'dev-main',
+            'version' => 'dev-main',
+            'reference' => '36166939315360071ec3c1bb5fd5c8d101f1e4ab',
             'type' => 'library',
             'install_path' => __DIR__ . '/../../',
             'aliases' => array(),
