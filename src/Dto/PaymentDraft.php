@@ -15,7 +15,7 @@ final class PaymentDraft
         public readonly Customer $customer,
         public readonly array $items,
         public readonly AmountBreakdown $amounts,
-        public readonly PaymentIntent $intent = PaymentIntent::SALE,
+        public readonly PaymentIntent $intent = PaymentIntent::Sale,
         public readonly array $metadata = [],
         public readonly array $allowedProviders = [],
     ) {

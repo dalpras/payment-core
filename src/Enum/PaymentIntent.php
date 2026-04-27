@@ -4,7 +4,7 @@ namespace DalPraS\Payment\Enum;
 
 enum PaymentIntent: string
 {
-    case SALE = 'sale';
-    case AUTHORIZE = 'authorize';
-    case CAPTURE_LATER = 'capture_later';
+    case Sale = 'sale';
+    case Authorize = 'authorize';
+    case CaptureLater = 'capture_later';
 }

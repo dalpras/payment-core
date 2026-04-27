@@ -46,7 +46,7 @@ final class PaymentManagerTest extends TestCase
             amounts: $amounts,
             returnUrl: 'https://example.test/return',
             cancelUrl: 'https://example.test/cancel',
-            intent: PaymentIntent::SALE,
+            intent: PaymentIntent::Sale,
         ));
 
         self::assertTrue($checkout->redirectRequired);

@@ -20,7 +20,7 @@ final class CheckoutRequest
         public readonly string $returnUrl,
         public readonly string $cancelUrl,
         public readonly ?string $webhookUrl = null,
-        public readonly PaymentIntent $intent = PaymentIntent::SALE,
+        public readonly PaymentIntent $intent = PaymentIntent::Sale,
         public readonly ?string $locale = null,
         public readonly ?string $idempotencyKey = null,
         public readonly ?string $correlationId = null,
