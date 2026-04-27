@@ -49,7 +49,7 @@ final class PaymentManager
             merchantReference: $request->merchantReference,
             providerCode: $request->providerCode,
             intent: $request->intent,
-            status: PaymentStatus::DRAFT,
+            status: PaymentStatus::Draft,
             customer: $request->customer,
             items: $request->items,
             amounts: $request->amounts,

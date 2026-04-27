@@ -4,16 +4,16 @@ namespace DalPraS\Payment\Enum;
 
 enum PaymentStatus: string
 {
-    case DRAFT = 'draft';
-    case PENDING_REDIRECT = 'pending_redirect';
-    case PENDING_CUSTOMER_ACTION = 'pending_customer_action';
-    case AUTHORIZED = 'authorized';
-    case CAPTURED = 'captured';
-    case PARTIALLY_CAPTURED = 'partially_captured';
-    case FAILED = 'failed';
-    case CANCELLED = 'cancelled';
-    case REFUNDED = 'refunded';
-    case PARTIALLY_REFUNDED = 'partially_refunded';
-    case EXPIRED = 'expired';
-    case UNKNOWN = 'unknown';
+    case Draft = 'draft';
+    case PendingRedirect = 'pending_redirect';
+    case PendingCustomerAction = 'pending_customer_action';
+    case Authorized = 'authorized';
+    case Captured = 'captured';
+    case PartiallyCaptured = 'partially_captured';
+    case Failed = 'failed';
+    case Cancelled = 'cancelled';
+    case Refunded = 'refunded';
+    case PartiallyRefunded = 'partially_refunded';
+    case Expired = 'expired';
+    case Unknown = 'unknown';
 }

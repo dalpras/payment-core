@@ -50,10 +50,10 @@ final class PaymentManagerTest extends TestCase
         ));
 
         self::assertTrue($checkout->redirectRequired);
-        self::assertSame(PaymentStatus::PENDING_REDIRECT, $repository->get('pay_1')?->status());
+        self::assertSame(PaymentStatus::PendingRedirect, $repository->get('pay_1')?->status());
 
         $complete = $manager->completeCheckout(new CompletionRequest('paypal', 'pay_1'));
-        self::assertSame(PaymentStatus::CAPTURED, $complete->status);
-        self::assertSame(PaymentStatus::CAPTURED, $repository->get('pay_1')?->status());
+        self::assertSame(PaymentStatus::Captured, $complete->status);
+        self::assertSame(PaymentStatus::Captured, $repository->get('pay_1')?->status());
     }
 }
