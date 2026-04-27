@@ -4,12 +4,12 @@ namespace DalPraS\Payment\Enum;
 
 enum OperationType: string
 {
-    case CHECKOUT_CREATE = 'checkout_create';
-    case CHECKOUT_COMPLETE = 'checkout_complete';
-    case AUTHORIZE = 'authorize';
-    case CAPTURE = 'capture';
-    case CANCEL = 'cancel';
-    case REFUND = 'refund';
-    case SYNC = 'sync';
-    case WEBHOOK = 'webhook';
+    case CheckoutCreate = 'checkout_create';
+    case CheckoutComplete = 'checkout_complete';
+    case Authorize = 'authorize';
+    case Capture = 'capture';
+    case Cancel = 'cancel';
+    case Refund = 'refund';
+    case Sync = 'sync';
+    case Webhook = 'webhook';
 }

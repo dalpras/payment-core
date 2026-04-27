@@ -64,7 +64,7 @@ final class PaymentManager
         $payment->setProviderPaymentId($response->providerPaymentId);
         $payment->setProviderToken($response->providerToken);
         $this->payments->save($payment);
-        $this->payments->addOperation(new PaymentOperation($payment->reference(), OperationType::CHECKOUT_CREATE, $response->status, $response->providerPaymentId, $response->raw, $response->message));
+        $this->payments->addOperation(new PaymentOperation($payment->reference(), OperationType::CheckoutCreate, $response->status, $response->providerPaymentId, $response->raw, $response->message));
 
         if ($request->idempotencyKey !== null) {
             $this->idempotency->put($request->idempotencyKey, $response);
@@ -89,7 +89,7 @@ final class PaymentManager
             $payment->setStatus($result->status);
             $payment->setProviderPaymentId($result->providerPaymentId ?? $payment->providerPaymentId());
             $this->payments->save($payment);
-            $this->payments->addOperation(new PaymentOperation($payment->reference(), OperationType::CHECKOUT_COMPLETE, $result->status, $result->providerPaymentId, $result->raw, $result->message));
+            $this->payments->addOperation(new PaymentOperation($payment->reference(), OperationType::CheckoutComplete, $result->status, $result->providerPaymentId, $result->raw, $result->message));
         }
         if ($request->idempotencyKey !== null) {
             $this->idempotency->put($request->idempotencyKey, $result);
@@ -97,11 +97,11 @@ final class PaymentManager
         return $result;
     }
 
-    public function authorize(AuthorizeRequest $request): AuthorizationResult { return $this->runSimple($request, OperationType::AUTHORIZE, fn($p) => $p->authorize($request)); }
-    public function capture(CaptureRequest $request): CaptureResult { return $this->runSimple($request, OperationType::CAPTURE, fn($p) => $p->capture($request)); }
-    public function cancel(CancelRequest $request): CancelResult { return $this->runSimple($request, OperationType::CANCEL, fn($p) => $p->cancel($request)); }
-    public function refund(RefundRequest $request): RefundResult { return $this->runSimple($request, OperationType::REFUND, fn($p) => $p->refund($request)); }
-    public function sync(SyncRequest $request): SyncResult { return $this->runSimple($request, OperationType::SYNC, fn($p) => $p->sync($request)); }
+    public function authorize(AuthorizeRequest $request): AuthorizationResult { return $this->runSimple($request, OperationType::Authorize, fn($p) => $p->authorize($request)); }
+    public function capture(CaptureRequest $request): CaptureResult { return $this->runSimple($request, OperationType::Capture, fn($p) => $p->capture($request)); }
+    public function cancel(CancelRequest $request): CancelResult { return $this->runSimple($request, OperationType::Cancel, fn($p) => $p->cancel($request)); }
+    public function refund(RefundRequest $request): RefundResult { return $this->runSimple($request, OperationType::Refund, fn($p) => $p->refund($request)); }
+    public function sync(SyncRequest $request): SyncResult { return $this->runSimple($request, OperationType::Sync, fn($p) => $p->sync($request)); }
 
     private function runSimple(object $request, OperationType $type, callable $callback): mixed
     {

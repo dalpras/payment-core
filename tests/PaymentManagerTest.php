@@ -28,13 +28,13 @@ final class PaymentManagerTest extends TestCase
         $repository = new InMemoryPaymentRepository();
         $manager = new PaymentManager($registry, $repository, new InMemoryIdempotencyStore());
 
-        $item = new LineItem('SKU1', 'Test item', 2, Money::fromDecimal('10.00', Currency::EUR));
+        $item = new LineItem('SKU1', 'Test item', 2, Money::fromDecimal('10.00', Currency::Eur));
         $amounts = new AmountBreakdown(
-            subtotal: Money::fromDecimal('20.00', Currency::EUR),
-            taxTotal: Money::zero(Currency::EUR),
-            discountTotal: Money::zero(Currency::EUR),
-            shippingTotal: Money::zero(Currency::EUR),
-            grandTotal: Money::fromDecimal('20.00', Currency::EUR),
+            subtotal: Money::fromDecimal('20.00', Currency::Eur),
+            taxTotal: Money::zero(Currency::Eur),
+            discountTotal: Money::zero(Currency::Eur),
+            shippingTotal: Money::zero(Currency::Eur),
+            grandTotal: Money::fromDecimal('20.00', Currency::Eur),
         );
 
         $checkout = $manager->createCheckout(new CheckoutRequest(
