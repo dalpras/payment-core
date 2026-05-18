@@ -24,8 +24,20 @@ final class Money
             throw new InvalidArgumentException('Amount must be a decimal string with max 2 decimals.');
         }
 
-        $normalized = number_format((float) $amount, 2, '.', '');
-        return new self((int) round(((float) $normalized) * 100), $currency);
+        $negative = str_starts_with($amount, '-');
+        $amount = ltrim($amount, '-');
+
+        [$major, $minor] = array_pad(explode('.', $amount, 2), 2, '0');
+
+        $minor = str_pad($minor, 2, '0');
+
+        $minorAmount = ((int) $major * 100) + (int) $minor;
+
+        if ($negative) {
+            $minorAmount *= -1;
+        }
+
+        return new self($minorAmount, $currency);
     }
 
     public function minorAmount(): int
@@ -55,9 +67,9 @@ final class Money
         return new self($this->minorAmount * $multiplier, $this->currency);
     }
 
-    public function decimal(): string
+    public function decimal(string $decimalSeparator = '.', string $thousandsSeparator = ''): string
     {
-        return number_format($this->minorAmount / 100, 2, '.', '');
+        return number_format($this->minorAmount / 100, 2, $decimalSeparator, $thousandsSeparator);
     }
 
     public function equals(self $other): bool

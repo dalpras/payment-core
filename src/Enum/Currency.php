@@ -4,7 +4,7 @@ namespace DalPraS\Payment\Enum;
 
 enum Currency: string
 {
-    case Eur = 'EUR';
-    case Usd = 'USD';
-    case Gbp = 'GBP';
+    case EUR = 'EUR';
+    case USD = 'USD';
+    case GBP = 'GBP';
 }
