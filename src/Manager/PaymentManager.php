@@ -128,6 +128,11 @@ final class PaymentManager
 
         if ($payment !== null) {
             $this->applyResult($payment, OperationType::CheckoutComplete, $result);
+
+            $forcedCaptureResult = $this->captureAfterAuthorizationIfRequired($request, $payment, $result);
+            if ($forcedCaptureResult !== null) {
+                $result = $forcedCaptureResult;
+            }
         }
 
         if ($idempotencyKey !== null) {
@@ -368,6 +373,71 @@ final class PaymentManager
         };
     }
 
+    /**
+     * When enabled, turn an authorization returned by completion into a real capture.
+     *
+     * Some providers/terminals may return Authorized even for a sale-style checkout.
+     * The policy is opt-in through metadata/providerOptions persisted on the Payment:
+     * force_capture_after_authorization=true.
+     */
+    private function captureAfterAuthorizationIfRequired(
+        CompletionRequest $request,
+        Payment $payment,
+        CompletionResult $completionResult,
+    ): ?CompletionResult {
+        if ($completionResult->status !== PaymentStatus::Authorized) {
+            return null;
+        }
+
+        $metadata = array_replace_recursive(
+            $this->mergedOperationMetadata($payment, $request->metadata),
+            $completionResult->metadata,
+        );
+
+        if (!($metadata['force_capture_after_authorization'] ?? false)) {
+            return null;
+        }
+
+        $operationId = $this->firstString($metadata, [
+            'operation_id',
+            'nexi_operation_id',
+            'authorization_id',
+            'paypal_authorization_id',
+            'provider_payment_id',
+        ]) ?? $completionResult->providerPaymentId;
+
+        if ($operationId === null || $operationId === '') {
+            return null;
+        }
+
+        $captureMetadata = array_replace_recursive($metadata, [
+            'description' => $metadata['capture_description'] ?? 'Forced capture after authorization',
+        ]);
+
+        $captureResult = $this->capture(new CaptureRequest(
+            providerCode: $request->providerCode,
+            paymentReference: $request->paymentReference,
+            providerPaymentId: $operationId,
+            idempotencyKey: $this->deterministicUuid($request->paymentReference . ':capture'),
+            metadata: $captureMetadata,
+        ));
+
+        return new CompletionResult(
+            status: $captureResult->status,
+            providerPaymentId: $captureResult->providerPaymentId ?? $operationId,
+            transactionIds: $captureResult->transactionIds,
+            message: $captureResult->message,
+            raw: [
+                'completion' => $completionResult->raw,
+                'capture' => $captureResult->raw,
+            ],
+            metadata: array_replace_recursive(
+                $completionResult->metadata,
+                $captureResult->metadata,
+            ),
+        );
+    }
+
     private function mergedOperationMetadata(Payment $payment, array $requestMetadata): array
     {
         return array_replace_recursive(
@@ -445,4 +515,14 @@ final class PaymentManager
             is_object($cached) ? $cached::class : gettype($cached)
         ));
     }
+
+    private function deterministicUuid(string $value): string
+    {
+        $hash = md5($value, true);
+
+        $hash[6] = chr((ord($hash[6]) & 0x0f) | 0x30); // UUID v3
+        $hash[8] = chr((ord($hash[8]) & 0x3f) | 0x80);
+
+        return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($hash), 4));
+    }    
 }
