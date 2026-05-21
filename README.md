@@ -1,36 +1,36 @@
 # DalPraS Payment Core
 
-A provider-agnostic PHP payment library skeleton designed to replace legacy Omnipay-style integrations with a modern, explicit, extensible architecture.
+Provider-agnostic PHP payment orchestration for checkout, completion, capture, refund, cancel and reconciliation.
 
-It is intentionally split into:
-- a **core package** with provider-neutral contracts and value objects
-- **provider connectors** such as PayPal and Nexi implemented separately
-- optional framework bridges for Laminas or other frameworks
+The package is designed to keep application code independent from provider-specific identifiers while still supporting real payment lifecycles such as:
+
+- Nexi Hosted Payment Page: `orderId` for checkout/completion, `operationId` for capture/refund/cancel
+- PayPal Orders v2: order id for checkout/completion, capture id for refund, authorization id for delayed capture/void
 
 ## Goals
 
-- support PayPal, Nexi, and future providers through native connectors
-- keep business entities decoupled from payment SDKs
-- model money, items, totals, checkout, completion, capture, refund, and sync explicitly
-- make retries, callbacks, and reconciliation idempotent
-- allow different purchasable objects to be adapted into a common payment model
+- Keep business entities decoupled from payment SDKs and provider payloads.
+- Persist a normalized `Payment` aggregate and immutable `PaymentOperation` audit log.
+- Make browser returns, retries, provider API calls and reconciliation idempotent.
+- Let provider packages return normalized metadata once, then let core reuse it automatically.
+- Allow application adapters to provide business metadata without knowing provider lifecycle IDs.
 
 ## Package status
 
-This package is a **skeleton** intended as a strong starting point.
-It already contains:
-- contracts
-- DTOs
-- enums
-- value objects
-- repository interfaces and in-memory implementations
-- an idempotency contract and in-memory store
-- a payment manager
-- a provider registry
-- a normalized payment aggregate
-- a basic state machine
+This package contains:
 
-It does **not** yet contain concrete connector implementations for PayPal or Nexi. Those should live in:
+- DTOs and value objects for checkout and provider operations
+- `PaymentProviderInterface`
+- `PaymentManager`
+- provider registry
+- payment repository contract with in-memory and Redis implementations
+- idempotency contract and in-memory/cache/Redis implementations
+- normalized `Payment` aggregate
+- immutable `PaymentOperation` audit entries
+- basic state machine
+
+Concrete providers live in separate packages:
+
 - `dalpras/payment-paypal`
 - `dalpras/payment-nexi`
 
@@ -46,134 +46,245 @@ composer require dalpras/payment-core
 DalPraS\Payment\
 ```
 
-## High-level architecture
+## Core lifecycle
 
-### Core concepts
+```text
+Application adapter
+    -> CheckoutRequest with business data and business metadata
+PaymentManager::createCheckout()
+    -> provider creates order/session
+    -> provider returns providerPaymentId, providerToken and normalized metadata
+    -> core stores Payment and PaymentOperation
+Browser return / webhook / admin action
+    -> application calls completeCheckout(), sync(), capture(), refund(), or cancel()
+    -> core enriches the request with stored Payment metadata and latest operation metadata
+    -> provider resolves the correct provider ID and performs the operation
+    -> core stores the new result metadata for future operations
+```
 
-- `Money`: immutable monetary value in minor units
-- `LineItem`: normalized item to buy
-- `AmountBreakdown`: subtotal, tax, discount, shipping, total
-- `Customer`, `Address`: snapshots used for checkout
-- `Payment`: normalized payment aggregate
-- `PaymentOperation`: normalized provider interaction log
-- `PaymentProviderInterface`: provider-neutral connector contract
-- `PaymentManager`: orchestration service
-- `PurchasableAdapterInterface`: adapts domain objects into payment inputs
-- `PaymentCalculatorInterface`: computes totals from adapted items
-- `PaymentRepositoryInterface`: persists payments and operations
-- `IdempotencyStoreInterface`: protects external operations from duplication
+## Metadata model
 
-### Suggested split into packages
+`Payment::$metadata` is intentionally part of the orchestration model. It contains:
 
-- `dalpras/payment-core`
-- `dalpras/payment-paypal`
-- `dalpras/payment-nexi`
-- `dalpras/payment-laminas`
+1. **Application metadata** supplied by your adapter.
+2. **Provider checkout metadata** returned by providers.
+3. **Provider operation metadata** returned by completion/capture/refund/cancel/sync.
 
-## Example flow
+Common normalized keys:
+
+| Key | Meaning |
+| --- | --- |
+| `provider` | Provider code such as `nexi` or `paypal` |
+| `provider_payment_id` | Main provider order/payment identifier |
+| `order_id` | Generic provider order id |
+| `operation_id` | Generic operation id for providers such as Nexi |
+| `capture_id` | Generic capture id, used by PayPal refunds |
+| `authorization_id` | Generic authorization id, used by delayed capture/void |
+| `nexi_order_id` | Nexi HPP order id |
+| `nexi_operation_id` | Nexi operation id |
+| `paypal_order_id` | PayPal order id |
+| `paypal_capture_id` | PayPal capture id |
+| `paypal_authorization_id` | PayPal authorization id |
+
+Request-level metadata always wins over stored metadata, so applications can still override the selected provider identifier when needed.
+
+## Important DTOs
+
+### `CheckoutResponse`
+
+Providers return `metadata` here to persist identifiers discovered at checkout creation.
 
 ```php
-use DalPraS\Payment\Manager\PaymentManager;
-use DalPraS\Payment\Registry\ProviderRegistry;
-use DalPraS\Payment\Repository\InMemoryPaymentRepository;
-use DalPraS\Payment\Idempotency\InMemoryIdempotencyStore;
-
-$manager = new PaymentManager(
-    new ProviderRegistry(),
-    new InMemoryPaymentRepository(),
-    new InMemoryIdempotencyStore(),
+new CheckoutResponse(
+    status: PaymentStatus::PendingCustomerAction,
+    redirectRequired: true,
+    redirectUrl: $redirectUrl,
+    providerPaymentId: $providerOrderId,
+    providerToken: $token,
+    raw: $rawProviderResponse,
+    metadata: [
+        'provider_payment_id' => $providerOrderId,
+        'order_id' => $providerOrderId,
+    ],
 );
 ```
 
-A real application would:
-1. adapt a domain object through `PurchasableAdapterInterface`
-2. calculate totals through `PaymentCalculatorInterface`
-3. create a `CheckoutRequest`
-4. call `PaymentManager::createCheckout()`
-5. store the returned redirect URL and provider payment ID
-6. handle browser return through `completeCheckout()`
-7. handle webhooks separately through connector-specific parsing and verification
+### `OperationResult`
 
-## Core interfaces
-
-### PaymentProviderInterface
+All operation results carry `transactionIds` and `metadata`. Provider packages should normalize useful IDs here instead of making the application parse `raw`.
 
 ```php
-interface PaymentProviderInterface
-{
-    public function code(): string;
-
-    public function createCheckout(CheckoutRequest $request): CheckoutResponse;
-
-    public function completeCheckout(CompletionRequest $request): CompletionResult;
-
-    public function authorize(AuthorizeRequest $request): AuthorizationResult;
-
-    public function capture(CaptureRequest $request): CaptureResult;
-
-    public function cancel(CancelRequest $request): CancelResult;
-
-    public function refund(RefundRequest $request): RefundResult;
-
-    public function sync(SyncRequest $request): SyncResult;
-
-    public function parseWebhook(ServerRequestInterface $request): WebhookEvent;
-
-    public function verifyWebhook(WebhookEvent $event): VerificationResult;
-}
+new RefundResult(
+    status: PaymentStatus::Refunded,
+    providerPaymentId: $captureOrOperationId,
+    transactionIds: [$refundOperationId],
+    raw: $rawProviderResponse,
+    metadata: [
+        'capture_id' => $captureId,
+        'refund_id' => $refundOperationId,
+    ],
+);
 ```
 
-## Adapting business objects
+## PaymentManager enrichment
 
-Keep domain entities clean. Prefer adapters instead of making domain models implement payment interfaces directly.
+`PaymentManager` automatically enriches requests before invoking providers:
 
-Example idea:
+- `completeCheckout()` receives stored provider order/payment id when the browser return does not include it.
+- `refund()` receives the latest stored `capture_id`, `operation_id`, or provider-specific equivalent.
+- `cancel()` receives the latest stored `operation_id` or `authorization_id`.
+- `capture()` receives the latest stored `authorization_id` or provider-specific equivalent.
+- `sync()` receives the stored order/payment id.
+
+This means application code can usually call:
 
 ```php
-final class VatCrmOrderAdapter implements PurchasableAdapterInterface
-{
-    public function supports(object $subject): bool
-    {
-        return $subject instanceof VatCrmOrderEntity;
-    }
-
-    public function toPaymentDraft(object $subject): PaymentDraft
-    {
-        // map domain order to normalized customer, items, totals, metadata
-    }
-}
+$result = $paymentManager->refund(new RefundRequest(
+    providerCode: 'nexi',
+    paymentReference: $paymentReference,
+    providerPaymentId: null,
+    idempotencyKey: $refundId,
+    metadata: [
+        'amount_minor' => '5000',
+        'currency' => 'EUR',
+        'description' => 'Customer refund',
+    ],
+));
 ```
 
-## State model
+Core will merge the stored Nexi `operation_id` before calling the Nexi provider.
 
-Normalized payment statuses:
-- `draft`
-- `pending_redirect`
-- `pending_customer_action`
-- `authorized`
-- `captured`
-- `partially_captured`
-- `failed`
-- `cancelled`
-- `refunded`
-- `partially_refunded`
-- `expired`
-- `unknown`
+## Application adapter guidance
 
-## What to build next
+Application adapters should provide business data, not provider-generated IDs.
 
-### `dalpras/payment-paypal`
-Implement `PaymentProviderInterface` using PayPal Orders v2.
+Good adapter metadata:
 
-### `dalpras/payment-nexi`
-Implement `PaymentProviderInterface` using Nexi official APIs / SDK.
+```php
+metadata: [
+    'application' => 'my-shop',
+    'local_order_id' => (string) $order->id(),
+    'order_number' => $order->number(),
+    'payment_uuid' => $paymentReference,
+    'description' => 'Order ' . $order->number(),
+    'amount_minor' => (string) $order->grandTotalMinor(),
+    'amount_decimal' => $order->grandTotalDecimal(),
+    'currency' => $order->currencyCode(),
+]
+```
 
-### `dalpras/payment-laminas`
-Add controller helpers, URL builders, dependency configuration, and HTTP entrypoints.
+Provider packages then add provider metadata after API calls.
+
+## Redis payment repository
+
+`RedisPaymentRepository` is the recommended production replacement for `InMemoryPaymentRepository` when you need a lightweight cross-request repository for redirect-based providers.
+
+It stores the `Payment` aggregate and related `PaymentOperation` entries in Redis using PHP serialization and a configurable TTL. This lets `PaymentManager` recover provider metadata after the customer returns from Nexi/PayPal:
+
+```text
+createCheckout() -> RedisPaymentRepository::save() -> provider redirect -> completeCheckout() -> RedisPaymentRepository::get()
+```
+
+Example Symfony wiring:
+
+```yaml
+DalPraS\Payment\Repository\RedisPaymentRepository:
+  class: DalPraS\Payment\Repository\RedisPaymentRepository
+  arguments:
+    - '@redis'
+    - 'payment:repository:'
+    - 86400
+  public: false
+
+DalPraS\Payment\Contract\PaymentRepositoryInterface:
+  alias: DalPraS\Payment\Repository\RedisPaymentRepository
+  public: false
+```
+
+Use a TTL long enough for abandoned browser sessions and delayed redirects. `86400` seconds, or 24 hours, is a practical default.
+
+Redis should still be treated as active-flow storage. For final accounting, support, reporting and later refunds/cancels, persist important provider metadata in your own durable entity/table, for example `OrderEntity.paymentMetadata`.
+
+## Persistence notes
+
+If you replace `InMemoryPaymentRepository` with a durable database repository, persist at least:
+
+### Payment
+
+- reference
+- merchant reference
+- provider code
+- intent
+- status
+- customer snapshot
+- line items snapshot
+- amount breakdown
+- provider payment id
+- provider token
+- idempotency key
+- correlation id
+- metadata JSON
+- created/updated timestamps
+
+### PaymentOperation
+
+- payment reference
+- operation type
+- status
+- provider payment id
+- transaction ids JSON
+- metadata JSON
+- raw payload JSON
+- message
+- created timestamp
+
+The new metadata and transaction id fields are important. Without them, automatic refund/cancel/capture enrichment will lose provider lifecycle identifiers.
+
+## Basic usage
+
+```php
+use DalPraS\Payment\Idempotency\InMemoryIdempotencyStore;
+use DalPraS\Payment\Manager\PaymentManager;
+use DalPraS\Payment\Registry\ProviderRegistry;
+use DalPraS\Payment\Repository\InMemoryPaymentRepository;
+use DalPraS\Payment\Repository\RedisPaymentRepository;
+
+$registry = new ProviderRegistry();
+$registry->register($paypalProvider);
+$registry->register($nexiProvider);
+
+$manager = new PaymentManager(
+    providers: $registry,
+    payments: new InMemoryPaymentRepository(), // Replace with RedisPaymentRepository or a DB repository in production.
+    idempotency: new InMemoryIdempotencyStore(),
+);
+```
+
+
+Production-style repository example:
+
+```php
+$manager = new PaymentManager(
+    providers: $registry,
+    payments: new RedisPaymentRepository($redis, 'payment:repository:', 86400),
+    idempotency: new InMemoryIdempotencyStore(),
+);
+```
 
 ## Testing
 
-This skeleton includes in-memory implementations so you can start writing tests before choosing persistence and provider SDKs.
+Run syntax checks:
+
+```bash
+find src tests -name '*.php' -print0 | xargs -0 -n1 php -l
+```
+
+Run PHPUnit after installing development dependencies:
+
+```bash
+composer install
+vendor/bin/phpunit
+```
 
 ## License
 

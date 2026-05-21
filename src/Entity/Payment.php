@@ -8,6 +8,13 @@ use DalPraS\Payment\ValueObject\AmountBreakdown;
 use DalPraS\Payment\ValueObject\Customer;
 use DalPraS\Payment\ValueObject\LineItem;
 
+/**
+ * Provider-neutral payment aggregate.
+ *
+ * The aggregate stores business data from CheckoutRequest plus normalized provider
+ * metadata returned by connectors. That metadata is the canonical place for IDs
+ * needed by later actions, such as Nexi operation_id or PayPal capture_id.
+ */
 final class Payment
 {
     /** @param list<LineItem> $items */
@@ -64,6 +71,34 @@ final class Payment
     {
         $this->providerToken = $providerToken;
         $this->touch();
+    }
+
+    /** Replace all stored metadata. Prefer mergeMetadata() for provider responses. */
+    public function setMetadata(array $metadata): void
+    {
+        $this->metadata = $metadata;
+        $this->touch();
+    }
+
+    /**
+     * Merge newly discovered provider metadata without losing existing business data.
+     * Later provider responses intentionally override previous values for the same key,
+     * allowing operation_id/capture_id to follow the latest successful operation.
+     */
+    public function mergeMetadata(array $metadata): void
+    {
+        if ($metadata === []) {
+            return;
+        }
+
+        $this->metadata = array_replace_recursive($this->metadata, $metadata);
+        $this->touch();
+    }
+
+    /** Convenience accessor used by orchestration/enrichment code. */
+    public function metadataValue(string $key, mixed $default = null): mixed
+    {
+        return $this->metadata[$key] ?? $default;
     }
 
     public function toArray(): array

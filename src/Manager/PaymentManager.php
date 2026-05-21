@@ -5,8 +5,8 @@ namespace DalPraS\Payment\Manager;
 use DalPraS\Payment\Contract\IdempotencyStoreInterface;
 use DalPraS\Payment\Contract\PaymentRepositoryInterface;
 use DalPraS\Payment\Contract\ProviderRegistryInterface;
-use DalPraS\Payment\Dto\AuthorizeRequest;
 use DalPraS\Payment\Dto\AuthorizationResult;
+use DalPraS\Payment\Dto\AuthorizeRequest;
 use DalPraS\Payment\Dto\CancelRequest;
 use DalPraS\Payment\Dto\CancelResult;
 use DalPraS\Payment\Dto\CaptureRequest;
@@ -27,38 +27,15 @@ use DalPraS\Payment\Enum\PaymentStatus;
 use DalPraS\Payment\State\PaymentStateMachine;
 
 /**
- * Coordinates payment operations between the application, payment providers,
- * the payment repository, the state machine and the idempotency store.
+ * Coordinates provider operations, idempotency, state transitions and metadata reuse.
  *
- * The manager is responsible for:
- *
- * - resolving the correct payment provider;
- * - creating and updating Payment entities;
- * - validating payment status transitions;
- * - storing PaymentOperation history records;
- * - applying idempotency to avoid duplicated provider calls.
- *
- * Idempotency keys are scoped by operation type before being stored.
- * This prevents different operations from sharing the same cached result.
- *
- * For example, the same raw idempotency key may become:
- *
- * - checkout_create:abc123
- * - checkout_complete:abc123
- * - capture:abc123
- * - refund:abc123
- *
- * This avoids returning a CheckoutResponse from completeCheckout(),
- * or a CaptureResult from refund(), when the same raw key is reused by callers.
+ * Provider connectors return normalized metadata such as operation_id, capture_id,
+ * authorization_id, nexi_order_id, or paypal_order_id. The manager persists that
+ * metadata and injects it into later requests, keeping application adapters focused
+ * on business data instead of provider-specific lifecycle identifiers.
  */
 final class PaymentManager
 {
-    /**
-     * @param ProviderRegistryInterface $providers Registry used to resolve the provider by provider code.
-     * @param PaymentRepositoryInterface $payments Repository used to persist payments and operations.
-     * @param IdempotencyStoreInterface $idempotency Store used to cache operation results by scoped idempotency key.
-     * @param PaymentStateMachine $stateMachine State machine used to validate payment status transitions.
-     */
     public function __construct(
         private readonly ProviderRegistryInterface $providers,
         private readonly PaymentRepositoryInterface $payments,
@@ -67,31 +44,15 @@ final class PaymentManager
     ) {
     }
 
-    /**
-     * Creates a checkout session/order with the selected provider.
-     *
-     * This method creates a new local Payment entity in Draft status,
-     * calls the provider to create the checkout, validates the transition
-     * to the provider response status, stores the provider identifiers,
-     * persists the payment and records a CheckoutCreate operation.
-     *
-     * If an idempotency key is provided, the cached CheckoutResponse is
-     * returned on repeated calls with the same scoped key.
-     */
     public function createCheckout(CheckoutRequest $request): CheckoutResponse
     {
-        $idempotencyKey = $this->operationIdempotencyKey(
-            OperationType::CheckoutCreate,
-            $request->idempotencyKey
-        );
+        $idempotencyKey = $this->operationIdempotencyKey(OperationType::CheckoutCreate, $request->idempotencyKey);
 
         if ($idempotencyKey !== null && $this->idempotency->has($idempotencyKey)) {
             $cached = $this->idempotency->get($idempotencyKey);
-
             if (!$cached instanceof CheckoutResponse) {
                 throw $this->invalidCachedResult($idempotencyKey, CheckoutResponse::class, $cached);
             }
-
             return $cached;
         }
 
@@ -118,17 +79,18 @@ final class PaymentManager
         $payment->setStatus($response->status);
         $payment->setProviderPaymentId($response->providerPaymentId);
         $payment->setProviderToken($response->providerToken);
+        $payment->mergeMetadata($response->metadata);
 
         $this->payments->save($payment);
-
-        $this->payments->addOperation(new PaymentOperation(
-            $payment->reference(),
-            OperationType::CheckoutCreate,
-            $response->status,
-            $response->providerPaymentId,
-            $response->raw,
-            $response->message
-        ));
+        $this->recordOperation(
+            payment: $payment,
+            type: OperationType::CheckoutCreate,
+            status: $response->status,
+            providerPaymentId: $response->providerPaymentId,
+            raw: $response->raw,
+            message: $response->message,
+            metadata: $response->metadata,
+        );
 
         if ($idempotencyKey !== null) {
             $this->idempotency->put($idempotencyKey, $response);
@@ -137,41 +99,20 @@ final class PaymentManager
         return $response;
     }
 
-    /**
-     * Completes a previously created checkout after the customer returns
-     * from the provider checkout flow.
-     *
-     * This method calls the provider completion endpoint, updates the local
-     * Payment entity when found, validates the status transition and records
-     * a CheckoutComplete operation.
-     *
-     * Typical examples:
-     *
-     * - capturing or confirming a PayPal order after payer approval;
-     * - finalizing a hosted checkout result;
-     * - reading provider-side completion status after redirect.
-     *
-     * If an idempotency key is provided, the cached CompletionResult is
-     * returned on repeated calls with the same scoped key.
-     */
     public function completeCheckout(CompletionRequest $request): CompletionResult
     {
-        $idempotencyKey = $this->operationIdempotencyKey(
-            OperationType::CheckoutComplete,
-            $request->idempotencyKey
-        );
+        $idempotencyKey = $this->operationIdempotencyKey(OperationType::CheckoutComplete, $request->idempotencyKey);
 
         if ($idempotencyKey !== null && $this->idempotency->has($idempotencyKey)) {
             $cached = $this->idempotency->get($idempotencyKey);
-
             if (!$cached instanceof CompletionResult) {
                 throw $this->invalidCachedResult($idempotencyKey, CompletionResult::class, $cached);
             }
-
             return $cached;
         }
 
         $payment = $this->payments->get($request->paymentReference);
+        $request = $this->enrichCompletionRequest($request, $payment);
         $provider = $this->providers->get($request->providerCode);
 
         $result = $provider->completeCheckout($request);
@@ -186,23 +127,7 @@ final class PaymentManager
         }
 
         if ($payment !== null) {
-            $this->stateMachine->assertCanTransition($payment->status(), $result->status);
-
-            $payment->setStatus($result->status);
-            $payment->setProviderPaymentId(
-                $result->providerPaymentId ?? $payment->providerPaymentId()
-            );
-
-            $this->payments->save($payment);
-
-            $this->payments->addOperation(new PaymentOperation(
-                $payment->reference(),
-                OperationType::CheckoutComplete,
-                $result->status,
-                $result->providerPaymentId,
-                $result->raw,
-                $result->message
-            ));
+            $this->applyResult($payment, OperationType::CheckoutComplete, $result);
         }
 
         if ($idempotencyKey !== null) {
@@ -212,104 +137,61 @@ final class PaymentManager
         return $result;
     }
 
-    /**
-     * Authorizes a payment without capturing funds immediately.
-     *
-     * The provider performs an authorization and the local payment status
-     * is updated according to the provider result.
-     */
     public function authorize(AuthorizeRequest $request): AuthorizationResult
     {
         return $this->runSimple(
             $request,
             OperationType::Authorize,
             AuthorizationResult::class,
-            fn ($provider): AuthorizationResult => $provider->authorize($request)
+            fn ($provider, AuthorizeRequest $enriched): AuthorizationResult => $provider->authorize($enriched)
         );
     }
 
-    /**
-     * Captures a previously authorized payment.
-     *
-     * The provider captures the funds and the local payment status is updated
-     * according to the provider result.
-     */
     public function capture(CaptureRequest $request): CaptureResult
     {
         return $this->runSimple(
             $request,
             OperationType::Capture,
             CaptureResult::class,
-            fn ($provider): CaptureResult => $provider->capture($request)
+            fn ($provider, CaptureRequest $enriched): CaptureResult => $provider->capture($enriched)
         );
     }
 
-    /**
-     * Cancels or voids a payment, depending on the provider and current status.
-     *
-     * The local payment status is updated after the provider confirms the
-     * cancellation result.
-     */
     public function cancel(CancelRequest $request): CancelResult
     {
         return $this->runSimple(
             $request,
             OperationType::Cancel,
             CancelResult::class,
-            fn ($provider): CancelResult => $provider->cancel($request)
+            fn ($provider, CancelRequest $enriched): CancelResult => $provider->cancel($enriched)
         );
     }
 
-    /**
-     * Refunds a payment, either fully or partially depending on the request.
-     *
-     * The local payment status is updated according to the refund result
-     * returned by the provider.
-     */
     public function refund(RefundRequest $request): RefundResult
     {
         return $this->runSimple(
             $request,
             OperationType::Refund,
             RefundResult::class,
-            fn ($provider): RefundResult => $provider->refund($request)
+            fn ($provider, RefundRequest $enriched): RefundResult => $provider->refund($enriched)
         );
     }
 
-    /**
-     * Synchronizes the local payment state with the provider state.
-     *
-     * This is useful when the provider sends asynchronous updates, when a
-     * webhook is missed, or when the application needs to verify the latest
-     * provider-side payment status.
-     */
     public function sync(SyncRequest $request): SyncResult
     {
         return $this->runSimple(
             $request,
             OperationType::Sync,
             SyncResult::class,
-            fn ($provider): SyncResult => $provider->sync($request)
+            fn ($provider, SyncRequest $enriched): SyncResult => $provider->sync($enriched)
         );
     }
 
     /**
-     * Executes a common provider operation and applies the standard payment
-     * update flow.
-     *
-     * This helper is used by authorize, capture, cancel, refund and sync.
-     * It resolves the provider, applies operation-scoped idempotency, executes
-     * the provider callback, validates the expected result type, updates the
-     * local Payment entity when found, records the PaymentOperation and stores
-     * the result in the idempotency store.
-     *
      * @template T of OperationResult
-     *
-     * @param object $request Operation request DTO. It must expose providerCode, paymentReference and optionally idempotencyKey.
-     * @param OperationType $type Operation type used for history and idempotency scoping.
-     * @param class-string<T> $expectedClass Expected result DTO class.
-     * @param callable(object): T $callback Callback that executes the provider operation.
-     *
+     * @param object $request
+     * @param class-string<T> $expectedClass
+     * @param callable(object, object): T $callback
      * @return T
      */
     private function runSimple(
@@ -323,18 +205,17 @@ final class PaymentManager
 
         if ($idempotencyKey !== null && $this->idempotency->has($idempotencyKey)) {
             $cached = $this->idempotency->get($idempotencyKey);
-
             if (!$cached instanceof $expectedClass) {
                 throw $this->invalidCachedResult($idempotencyKey, $expectedClass, $cached);
             }
-
             return $cached;
         }
 
-        $provider = $this->providers->get($request->providerCode);
         $payment = $this->payments->get($request->paymentReference);
+        $request = $this->enrichSimpleRequest($request, $payment, $type);
+        $provider = $this->providers->get($request->providerCode);
 
-        $result = $callback($provider);
+        $result = $callback($provider, $request);
 
         if (!$result instanceof $expectedClass) {
             throw new \UnexpectedValueException(sprintf(
@@ -347,23 +228,7 @@ final class PaymentManager
         }
 
         if ($payment !== null) {
-            $this->stateMachine->assertCanTransition($payment->status(), $result->status);
-
-            $payment->setStatus($result->status);
-            $payment->setProviderPaymentId(
-                $result->providerPaymentId ?? $payment->providerPaymentId()
-            );
-
-            $this->payments->save($payment);
-
-            $this->payments->addOperation(new PaymentOperation(
-                $payment->reference(),
-                $type,
-                $result->status,
-                $result->providerPaymentId,
-                $result->raw,
-                $result->message
-            ));
+            $this->applyResult($payment, $type, $result);
         }
 
         if ($idempotencyKey !== null) {
@@ -373,14 +238,192 @@ final class PaymentManager
         return $result;
     }
 
+    /** Apply a provider result to the aggregate and persist a matching operation log. */
+    private function applyResult(Payment $payment, OperationType $type, OperationResult $result): void
+    {
+        $this->stateMachine->assertCanTransition($payment->status(), $result->status);
+
+        $payment->setStatus($result->status);
+        $payment->setProviderPaymentId($result->providerPaymentId ?? $payment->providerPaymentId());
+        $payment->mergeMetadata($result->metadata);
+
+        $this->payments->save($payment);
+        $this->recordOperation(
+            payment: $payment,
+            type: $type,
+            status: $result->status,
+            providerPaymentId: $result->providerPaymentId,
+            raw: $result->raw,
+            message: $result->message,
+            transactionIds: $result->transactionIds,
+            metadata: $result->metadata,
+        );
+    }
+
+    private function recordOperation(
+        Payment $payment,
+        OperationType $type,
+        PaymentStatus $status,
+        ?string $providerPaymentId = null,
+        array $raw = [],
+        ?string $message = null,
+        array $transactionIds = [],
+        array $metadata = [],
+    ): void {
+        $this->payments->addOperation(new PaymentOperation(
+            paymentReference: $payment->reference(),
+            type: $type,
+            status: $status,
+            providerPaymentId: $providerPaymentId,
+            raw: $raw,
+            message: $message,
+            transactionIds: $transactionIds,
+            metadata: $metadata,
+        ));
+    }
+
     /**
-     * Builds an operation-scoped idempotency key.
+     * Enrich browser-return completion with the stored provider order/payment id.
      *
-     * Raw idempotency keys should not be stored directly because the same
-     * caller-provided key may be reused across different payment operations.
-     * Prefixing the key with the operation type ensures that each operation
-     * has an independent cached result.
+     * This prevents controllers from having to know whether a provider expects a Nexi
+     * orderId, a PayPal token/order id, or another identifier after redirect.
      */
+    private function enrichCompletionRequest(CompletionRequest $request, ?Payment $payment): CompletionRequest
+    {
+        if ($payment === null) {
+            return $request;
+        }
+
+        $metadata = $this->mergedOperationMetadata($payment, $request->metadata);
+
+        return new CompletionRequest(
+            providerCode: $request->providerCode,
+            paymentReference: $request->paymentReference,
+            queryParams: $request->queryParams,
+            bodyParams: $request->bodyParams,
+            expectedProviderPaymentId: $request->expectedProviderPaymentId
+                ?? $payment->providerPaymentId()
+                ?? $this->firstString($metadata, ['provider_payment_id', 'order_id', 'nexi_order_id', 'paypal_order_id']),
+            expectedIntent: $request->expectedIntent ?? $payment->intent(),
+            idempotencyKey: $request->idempotencyKey,
+            metadata: $metadata,
+            correlationId: $request->correlationId ?? $payment->correlationId(),
+        );
+    }
+
+    /**
+     * Merge stored metadata into post-checkout requests before invoking providers.
+     *
+     * Explicit request metadata wins, then latest operation metadata, then payment
+     * metadata. This makes manual overrides possible while keeping the default path
+     * automatic for refund/cancel/capture/sync.
+     */
+    private function enrichSimpleRequest(object $request, ?Payment $payment, OperationType $type): object
+    {
+        if ($payment === null) {
+            return $request;
+        }
+
+        $requestMetadata = is_array($request->metadata ?? null) ? $request->metadata : [];
+        $metadata = $this->mergedOperationMetadata($payment, $requestMetadata);
+        $providerPaymentId = ($request->providerPaymentId ?? null) ?: $this->resolveProviderPaymentId($payment, $metadata, $type);
+
+        return match ($request::class) {
+            AuthorizeRequest::class => new AuthorizeRequest(
+                providerCode: $request->providerCode,
+                paymentReference: $request->paymentReference,
+                providerPaymentId: $providerPaymentId,
+                idempotencyKey: $request->idempotencyKey,
+                metadata: $metadata,
+            ),
+            CaptureRequest::class => new CaptureRequest(
+                providerCode: $request->providerCode,
+                paymentReference: $request->paymentReference,
+                providerPaymentId: $providerPaymentId,
+                idempotencyKey: $request->idempotencyKey,
+                metadata: $metadata,
+            ),
+            CancelRequest::class => new CancelRequest(
+                providerCode: $request->providerCode,
+                paymentReference: $request->paymentReference,
+                providerPaymentId: $providerPaymentId,
+                idempotencyKey: $request->idempotencyKey,
+                metadata: $metadata,
+            ),
+            RefundRequest::class => new RefundRequest(
+                providerCode: $request->providerCode,
+                paymentReference: $request->paymentReference,
+                providerPaymentId: $providerPaymentId,
+                idempotencyKey: $request->idempotencyKey,
+                metadata: $metadata,
+            ),
+            SyncRequest::class => new SyncRequest(
+                providerCode: $request->providerCode,
+                paymentReference: $request->paymentReference,
+                providerPaymentId: $providerPaymentId,
+                idempotencyKey: $request->idempotencyKey,
+                metadata: $metadata,
+            ),
+            default => $request,
+        };
+    }
+
+    private function mergedOperationMetadata(Payment $payment, array $requestMetadata): array
+    {
+        return array_replace_recursive(
+            $payment->metadata(),
+            $this->latestOperationMetadata($payment->reference()),
+            $requestMetadata,
+        );
+    }
+
+    private function latestOperationMetadata(string $paymentReference): array
+    {
+        $operations = array_reverse($this->payments->operationsFor($paymentReference));
+
+        foreach ($operations as $operation) {
+            $metadata = $operation->metadata();
+            if ($metadata !== []) {
+                return $metadata;
+            }
+        }
+
+        return [];
+    }
+
+    /** Resolve the provider identifier most likely needed for the given operation. */
+    private function resolveProviderPaymentId(Payment $payment, array $metadata, OperationType $type): ?string
+    {
+        return match ($type) {
+            OperationType::Refund => $this->firstString($metadata, [
+                'capture_id', 'paypal_capture_id', 'operation_id', 'nexi_operation_id', 'nexi_capture_operation_id',
+            ]) ?? $payment->providerPaymentId(),
+            OperationType::Cancel => $this->firstString($metadata, [
+                'operation_id', 'nexi_operation_id', 'nexi_capture_operation_id', 'authorization_id', 'paypal_authorization_id',
+            ]) ?? $payment->providerPaymentId(),
+            OperationType::Capture => $this->firstString($metadata, [
+                'authorization_id', 'paypal_authorization_id', 'operation_id', 'nexi_operation_id', 'nexi_authorization_operation_id',
+            ]) ?? $payment->providerPaymentId(),
+            OperationType::Sync => $this->firstString($metadata, [
+                'order_id', 'nexi_order_id', 'paypal_order_id', 'provider_payment_id',
+            ]) ?? $payment->providerPaymentId(),
+            default => $payment->providerPaymentId(),
+        };
+    }
+
+    /** @param list<string> $keys */
+    private function firstString(array $metadata, array $keys): ?string
+    {
+        foreach ($keys as $key) {
+            $value = $metadata[$key] ?? null;
+            if (is_string($value) && $value !== '') {
+                return $value;
+            }
+        }
+
+        return null;
+    }
+
     private function operationIdempotencyKey(OperationType $type, ?string $idempotencyKey): ?string
     {
         if ($idempotencyKey === null || $idempotencyKey === '') {
@@ -390,15 +433,6 @@ final class PaymentManager
         return $type->value . ':' . $idempotencyKey;
     }
 
-    /**
-     * Creates a descriptive exception for an idempotency cache type mismatch.
-     *
-     * A mismatch usually means the same raw idempotency key was previously
-     * stored without operation scoping, or the idempotency store contains
-     * stale data from an older implementation.
-     *
-     * @param class-string $expectedClass
-     */
     private function invalidCachedResult(
         string $idempotencyKey,
         string $expectedClass,
