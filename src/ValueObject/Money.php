@@ -20,18 +20,26 @@ final class Money
 
     public static function fromDecimal(string $amount, Currency $currency): self
     {
-        if (!preg_match('/^-?\d+(\.\d{1,2})?$/', $amount)) {
-            throw new InvalidArgumentException('Amount must be a decimal string with max 2 decimals.');
+        $fractionDigits = $currency->fractionDigits();
+        $pattern = $fractionDigits === 0
+            ? '/^-?\d+$/'
+            : sprintf('/^-?\d+(\.\d{1,%d})?$/', $fractionDigits);
+
+        if (!preg_match($pattern, $amount)) {
+            throw new InvalidArgumentException(sprintf(
+                'Amount must be a decimal string with max %d decimals.',
+                $fractionDigits
+            ));
         }
 
         $negative = str_starts_with($amount, '-');
         $amount = ltrim($amount, '-');
+        $factor = 10 ** $fractionDigits;
 
         [$major, $minor] = array_pad(explode('.', $amount, 2), 2, '0');
+        $minor = $fractionDigits === 0 ? '0' : str_pad($minor, $fractionDigits, '0');
 
-        $minor = str_pad($minor, 2, '0');
-
-        $minorAmount = ((int) $major * 100) + (int) $minor;
+        $minorAmount = ((int) $major * $factor) + (int) $minor;
 
         if ($negative) {
             $minorAmount *= -1;
@@ -69,7 +77,10 @@ final class Money
 
     public function decimal(string $decimalSeparator = '.', string $thousandsSeparator = ''): string
     {
-        return number_format($this->minorAmount / 100, 2, $decimalSeparator, $thousandsSeparator);
+        $fractionDigits = $this->currency->fractionDigits();
+        $factor = 10 ** $fractionDigits;
+
+        return number_format($this->minorAmount / $factor, $fractionDigits, $decimalSeparator, $thousandsSeparator);
     }
 
     public function equals(self $other): bool
