@@ -18,8 +18,31 @@ final class Money
         return new self(0, $currency);
     }
 
-    public static function fromDecimal(string $amount, Currency $currency): self
+    public static function fromDecimal(
+        string $amount,
+        Currency $currency,
+        string $decimalSeparator = '.',
+        string $thousandsSeparator = '',
+    ): self
     {
+        $amount = trim($amount);
+
+        if ($decimalSeparator === '') {
+            throw new InvalidArgumentException('Decimal separator cannot be empty.');
+        }
+
+        if ($decimalSeparator === $thousandsSeparator) {
+            throw new InvalidArgumentException('Decimal and thousands separators must differ.');
+        }
+
+        if ($thousandsSeparator !== '') {
+            $amount = str_replace($thousandsSeparator, '', $amount);
+        }
+
+        if ($decimalSeparator !== '.') {
+            $amount = str_replace($decimalSeparator, '.', $amount);
+        }
+
         $fractionDigits = $currency->fractionDigits();
         $pattern = $fractionDigits === 0
             ? '/^-?\d+$/'
